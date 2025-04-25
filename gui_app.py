@@ -26,10 +26,10 @@ class AttendanceGUI(tk.Tk):
         super().__init__()
 
         # ── DPI-aware window size ────────────────────────────────────
-        base_w, base_h = 390, 270
+        base_w, base_h = 400, 270
         scale = float(self.tk.call("tk", "scaling"))
         self.geometry(f"{int(base_w*scale)}x{int(base_h*scale)}")
-        self.resizable(False, False)
+        self.resizable(True, True)
         self.title("Attendance Master Sheet Filler")
 
         if ICON_PATH.exists():
