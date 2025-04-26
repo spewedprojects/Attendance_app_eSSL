@@ -2,7 +2,7 @@ import pandas as pd
 from pathlib import Path
 from datetime import datetime
 
-# ── scheduled start per shift code (for late marks) ──────────────────
+# ── shift start times used for late-mark check ───────────────────────
 shift_start = {
     "FS": "08:00",  "First":   "08:00",
     "GS": "09:30",  "General": "09:30",
@@ -23,6 +23,7 @@ def build_master(shifted_path: str | Path, save_path: str | Path) -> None:
       • shift-aware late marks (>15 min)
       • half-day rule  (4.5 h ≤ WH < 5.5 h  ⇒ 0.5P)
       • OT rounding:  add 1 h if fractional ≥ 0.75 h
+      • C-off: 0.5 C-off (3.5–4.0 h extra), 1.0 C-off (≥7.0 h extra)
     """
     df = pd.read_excel(shifted_path)
 
@@ -48,6 +49,7 @@ def build_master(shifted_path: str | Path, save_path: str | Path) -> None:
 
         present = leave = od1 = od2 = late = 0
         ot_hours = 0
+        c_off = 0.0
         working_hours = []
         daily_status  = []
 
@@ -104,21 +106,29 @@ def build_master(shifted_path: str | Path, save_path: str | Path) -> None:
             else:
                 daily_status.append("")
 
-            # --- OT accumulation (rounded) -------------
-            if wh and wh > 8.5:
-                raw_ot = wh - 8.5
-                ot_today = int(raw_ot) + (1 if raw_ot - int(raw_ot) >= 0.75 else 0)
-                ot_hours += ot_today
-
+            # --- working hours tracking ----------------
             if wh:
                 working_hours.append(wh)
+
+                # --- OT (only if worked > 8.5 h) --------------
+                if wh > 8.5:
+                    raw_ot = wh - 8.5
+                    ot_today = int(raw_ot) + (1 if raw_ot - int(raw_ot) >= 0.75 else 0)
+                    ot_hours += ot_today
+
+                # --- C-off logic ------------------------------
+                extra = wh - 8.5
+                if 3.5 <= extra < 4.0:
+                    c_off += 0.5
+                elif extra >= 7.0:
+                    c_off += 1.0
 
         avg_wh = round(sum(working_hours) / len(working_hours), 2) if working_hours else 0
 
         master_rows.append([
             sr, emp_id, emp_name, *daily_status,
-            present, leave, 5, 0, num_days, "", 20, 19,
-            od1, od2, avg_wh, ot_hours, late, "", ""
+            present, leave, 5, 0, num_days,
+            c_off, 20, 19, od1, od2, avg_wh, ot_hours, late, "", ""
         ])
 
     # ---- header & save -------------------------------------------
@@ -137,4 +147,4 @@ def build_master(shifted_path: str | Path, save_path: str | Path) -> None:
 # quick standalone run
 if __name__ == "__main__":
     build_master("April25_WorkDurationReport (1)_cleaned_shiftaware.xlsx",
-                 "APRIL25_master_filled_OTrounded.xlsx")
+                 "APRIL25_master_filled_final.xlsx")
