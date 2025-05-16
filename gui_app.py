@@ -124,21 +124,30 @@ class AttendanceGUI(tk.Tk):
 
     # ── browse helpers ───────────────────────────────────────────────
     def _browse_raw(self):
-        p = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
-        if p: self.raw_var.set(p)
+        """Full-pipeline RAW file (first step is 'clean'): accept .xls/.xlsx"""
+        p = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx *.xls")])
+        if p:
+            self.raw_var.set(p)
 
     def _browse_shift(self):
         p = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
         if p: self.shift_var.set(p)
 
     def _browse_single(self):
-        p = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
-        if p: self.single_inp.set(p)
+        """Single-step chooser: allow .xls only when step == 'clean'."""
+        # choose filter based on the selected radio-button
+        types = [("Excel files", "*.xlsx *.xls")] if self.step_choice.get() == "clean" \
+            else [("Excel files", "*.xlsx")]
+        p = filedialog.askopenfilename(filetypes=types)
+        if p:
+            self.single_inp.set(p)
 
     def _browse_extra(self):
+        """Extra file (shifts / save-to) – stay .xlsx-only"""
         if self.step_choice.get() == "shift":
             p = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
-            if p: self.extra_var.set(p)
+            if p:
+                self.extra_var.set(p)
 
     # ── FULL PIPELINE callback ───────────────────────────────────────
     def _run_full(self):
