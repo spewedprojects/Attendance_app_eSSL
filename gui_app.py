@@ -230,8 +230,8 @@ class AttendanceGUI(tk.Tk):
                 build_master(
                     inp,
                     Path(save_to),
-                    analyze_comments=False,
-                    shifts_path=None,
+                    analyze_comments=self.analyze_comments.get(),
+                    shifts_path=Path(self.extra_var.get()) if self.analyze_comments.get() else None
                 )
                 messagebox.showinfo("Done", f"Master sheet saved:\n{save_to}")
             self.status.set("✔ Completed")
