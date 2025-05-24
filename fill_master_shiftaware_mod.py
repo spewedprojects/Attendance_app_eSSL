@@ -6,6 +6,7 @@ import re
 from openpyxl import load_workbook
 from dateutil import parser as dt_parser
 
+# ── shift start times used for late-mark check ───────────────────────
 shift_start = {
     "FS": "08:00",  "First":   "08:00",
     "GS": "09:30",  "General": "09:30",
@@ -18,7 +19,7 @@ def _parse_hhmm(txt: str):
         return datetime.strptime(txt.strip(), "%H:%M")
     except Exception:
         return None
-
+# -- Analyze comments/notes logic -----------------------------------
 def override_by_comment(note, t_in, t_out):
     o = {"force_status": None, "skip_half_day": False, "late_override": None, "extra_wh": 0.0}
     if not note:
@@ -65,6 +66,13 @@ def override_by_comment(note, t_in, t_out):
     return o
 
 def build_master(shifted_path, save_path, analyze_comments=False, shifts_path=None):
+    """
+        Build master sheet with:
+          • shift-aware late marks (>15 min)
+          • half-day rule  (4.5 h ≤ WH < 5.5 h  ⇒ 0.5P)
+          • OT rounding:  add 1 h if fractional ≥ 0.75 h
+          • C-off: 0.5 C-off (3.5–4.0 h extra), 1.0 C-off (≥7.0 h extra)
+        """
     df = pd.read_excel(shifted_path)
     date_cols = df.columns[3:]
     num_days = len(date_cols)
@@ -108,9 +116,11 @@ def build_master(shifted_path, save_path, analyze_comments=False, shifts_path=No
         working_hours = []
         daily_status = []
 
+        # ── per-date loop ──────────────────────────────────────────
         for idx, col in enumerate(status_row.index):
             status = str(status_row[col]).strip()
 
+            # --- worked hours for the day (if any) ---
             t_in = _parse_hhmm(str(in_row[col]))
             t_out = _parse_hhmm(str(out_row[col]))
             wh = (t_out - t_in).seconds / 3600 if (t_in and t_out and t_out > t_in) else 0
@@ -124,10 +134,12 @@ def build_master(shifted_path, save_path, analyze_comments=False, shifts_path=No
                 if override["extra_wh"]:
                     wh += override["extra_wh"]
 
+            # --- half-day rule -----------------------
             if status == "P" and not override["skip_half_day"]:
                 if 4.5 <= wh < 5.5:
                     status = "0.5P"
 
+            # --- late mark (only full P) --------------
             late_flag = False
             if status == "P":
                 shift_code = str(shift_row[col]).strip()
@@ -147,6 +159,7 @@ def build_master(shifted_path, save_path, analyze_comments=False, shifts_path=No
             if override["force_status"] is not None:
                 status = override["force_status"]
 
+            # --- set master status & counters ----------
             if status == "P":
                 present += 1
                 late += int(late_flag)
@@ -172,14 +185,17 @@ def build_master(shifted_path, save_path, analyze_comments=False, shifts_path=No
             else:
                 daily_status.append("")
 
+            # --- working hours tracking ----------------
             if wh:
                 working_hours.append(wh)
 
+                # --- OT (only if worked > 8.5 h) --------------
                 if wh > 8.5:
                     raw_ot = wh - 8.5
                     ot_today = int(raw_ot) + (1 if raw_ot - int(raw_ot) >= 0.75 else 0)
                     ot_hours += ot_today
 
+                # --- C-off logic ------------------------------
                 extra = wh - 8.5
                 if 3.5 <= extra < 4.0:
                     c_off += 0.5
@@ -194,6 +210,7 @@ def build_master(shifted_path, save_path, analyze_comments=False, shifts_path=No
             c_off, 20, 19, od1, od2, avg_wh, ot_hours, late, "", ""
         ])
 
+    # ---- header & save -------------------------------------------
     cols = (
         ["Sr. no.", "Emp. ID", "Emp. name"] +
         [d.strftime("%d") for d in pd.date_range(first_date, periods=num_days)] +

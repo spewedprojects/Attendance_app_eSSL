@@ -10,9 +10,11 @@ try:
 except Exception:
     pass
 
+# ──  Icon path (works after PyInstaller) ─────────────────────────────
 APP_DIR   = Path(getattr(sys, "_MEIPASS", os.getcwd()))
 ICON_PATH = APP_DIR / "icon.ico"
 
+# ──  Import processing functions  ──────────────────────────────────
 from clean_workduration_mod           import clean_raw
 from cleanup_2_mod                    import rectify_file
 from assign_shifttimes_cleanedup_mod  import add_shifts
@@ -23,9 +25,22 @@ EXCEL_FILETYPES = [("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
 
 
 class AttendanceGUI(tk.Tk):
+    """Tkinter front‑end for the attendance pipeline.
+
+        NEW in this version (May 2025)
+        ─────────────────────────────
+        • Checkbox **“Analyse comments in shift notes”** – when ticked we pass the
+          same shifts workbook a second time to `build_master`, enabling the new
+          cell‑note parsing logic you added earlier.
+        • The extra‑file selector (shown below the radio buttons) now appears when
+          either the **Shift** step *or* the **Master** step + checkbox combo
+          requires a second workbook.
+        """
+
     def __init__(self):
         super().__init__()
 
+        # ╭─ DPI‑aware window size ───────────────────────────────────╮
         base_w, base_h = 400, 290  # a tad taller for the new checkbox
         scale = float(self.tk.call("tk", "scaling"))
         self.geometry(f"{int(base_w * scale)}x{int(base_h * scale)}")
@@ -101,6 +116,7 @@ class AttendanceGUI(tk.Tk):
                 step_frame, text=text, value=val, variable=self.step_choice, command=self._toggle_extra
             ).pack(side="left", padx=4)
 
+        # extra file (for shifts file or save‑path)
         self.extra_lbl = ttk.Label(self, text="Shifts file / Save-to:")
         self.extra_ent = ttk.Entry(self, textvariable=self.extra_var, width=55, state="readonly")
         self.extra_btn = ttk.Button(self, text="Browse…", command=self._browse_extra)
