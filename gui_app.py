@@ -41,11 +41,12 @@ class AttendanceGUI(tk.Tk):
         super().__init__()
 
         # ╭─ DPI‑aware window size ───────────────────────────────────╮
-        base_w, base_h = 400, 290  # a tad taller for the new checkbox
+        base_w, base_h = 400, 310  # a tad taller for the new checkbox
         scale = float(self.tk.call("tk", "scaling"))
         self.geometry(f"{int(base_w * scale)}x{int(base_h * scale)}")
         self.resizable(True, True)
-        self.title("Attendance Master Sheet Filler")
+        version = "v3.2"
+        self.title(f"Attendance Master Sheet Filler — {version}")
 
         if ICON_PATH.exists():
             try:
