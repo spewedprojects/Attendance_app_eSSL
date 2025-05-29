@@ -67,7 +67,7 @@ class AttendanceGUI(tk.Tk):
 
     # ── UI layout ----------------------------------------------------
     def _build_widgets(self):
-        pad = {"padx": 6, "pady": 3}
+        pad = {"padx": 8, "pady": 4}
 
         # === FULL PIPELINE ==========================================
         ttk.Label(self, text="A)  Full pipeline").grid(row=0, column=0, sticky="w", **pad)
@@ -92,20 +92,29 @@ class AttendanceGUI(tk.Tk):
         ).grid(row=5, column=0, columnspan=2, sticky="w", **pad)
 
         ttk.Button(self, text="Run full pipeline", command=self._run_full, width=25).grid(
-            row=6, column=0, columnspan=2, pady=(6, 10)
+            row=8, column=0, columnspan=2, pady=(6, 4)
         )
 
-        ttk.Separator(self).grid(row=7, columnspan=2, sticky="ew", pady=(2, 4))
+        # OT Filter — appears just *below* button and *above* separator
+        ttk.Label(self, text="EmpCodes for OT table (comma-separated):").grid(
+            row=6, column=0, sticky="w", **pad
+        )
+        self.filter_var = tk.StringVar()
+        ttk.Entry(self, textvariable=self.filter_var, width=55).grid(
+            row=7, column=0, columnspan=2, sticky="ew", **pad
+        )
+
+        ttk.Separator(self).grid(row=9, columnspan=2, sticky="ew", pady=(2, 4))
 
         # === SINGLE-STEP ============================================
-        ttk.Label(self, text="B)  Single-step utility").grid(row=8, column=0, sticky="w", **pad)
+        ttk.Label(self, text="B)  Single-step utility").grid(row=10, column=0, sticky="w", **pad)
         ttk.Entry(self, textvariable=self.single_inp, width=55, state="readonly").grid(
-            row=9, column=0, sticky="ew", **pad
+            row=11, column=0, sticky="ew", **pad
         )
-        ttk.Button(self, text="Browse…", command=self._browse_single).grid(row=9, column=1, **pad)
+        ttk.Button(self, text="Browse…", command=self._browse_single).grid(row=11, column=1, **pad)
 
         step_frame = ttk.Frame(self)
-        step_frame.grid(row=10, column=0, columnspan=2, sticky="w", **pad)
+        step_frame.grid(row=12, column=0, columnspan=2, sticky="w", **pad)
         for text, val in [
             ("Clean raw", "clean"),
             ("Rectify blanks", "rectify"),
@@ -123,11 +132,11 @@ class AttendanceGUI(tk.Tk):
         self._toggle_extra()
 
         ttk.Button(self, text="Run selected step", command=self._run_single, width=25).grid(
-            row=13, column=0, columnspan=2, pady=(6, 10)
+            row=14, column=0, columnspan=2, pady=(6, 10)
         )
 
-        ttk.Separator(self).grid(row=14, columnspan=2, sticky="ew")
-        ttk.Label(self, textvariable=self.status).grid(row=15, column=0, columnspan=2)
+        ttk.Separator(self).grid(row=15, columnspan=2, sticky="ew")
+        ttk.Label(self, textvariable=self.status).grid(row=16, column=0, columnspan=2)
 
     # ── Browse helpers ----------------------------------------------
     def _browse_raw(self):
@@ -203,11 +212,13 @@ class AttendanceGUI(tk.Tk):
                 return
 
             self.status.set("Building master…")
+            filt = [c.strip() for c in self.filter_var.get().split(",") if c.strip()]
             build_master(
                 shifted,
                 Path(save_to),
                 analyze_comments=self.analyze_comments.get(),
                 shifts_path=shift,
+                ot_filter=filt or None,  # None ⇒ include everyone
             )
 
             self.status.set("✔ Full pipeline done")
@@ -243,11 +254,13 @@ class AttendanceGUI(tk.Tk):
                 )
                 if not save_to:
                     return
+                filt = [c.strip() for c in self.filter_var.get().split(",") if c.strip()]
                 build_master(
                     inp,
                     Path(save_to),
                     analyze_comments=self.analyze_comments.get(),
-                    shifts_path=Path(self.extra_var.get()) if self.analyze_comments.get() else None
+                    shifts_path=Path(self.extra_var.get()) if self.analyze_comments.get() else None,
+                    ot_filter = filt or None  # ← add here too
                 )
                 messagebox.showinfo("Done", f"Master sheet saved:\n{save_to}")
             self.status.set("✔ Completed")

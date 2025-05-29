@@ -4,6 +4,7 @@ from datetime import datetime
 import re
 from openpyxl import load_workbook
 from dateutil import parser as dt_parser
+from typing import Iterable, List, Optional
 
 # ── shift start times used for late‑mark check ───────────────────────
 shift_start = {
@@ -12,6 +13,7 @@ shift_start = {
     "SS": "11:30",  "Second":  "11:30",
     "NS": "20:30",  "Night":   "20:30",
 }
+
 
 def _parse_hhmm(txt: str):
     try:
@@ -67,17 +69,32 @@ def override_by_comment(note, t_in, t_out):
 
     return o
 
-def build_master(shifted_path, save_path, analyze_comments=False, shifts_path=None):
+
+def build_master(
+    shifted_path,
+    save_path,
+    analyze_comments: bool = False,
+    shifts_path: Optional[str] = None,
+    ot_filter: Optional[Iterable[str]] = None,
+):
     """
     Build master sheet with **two** tables:
         1️⃣  Existing attendance summary (status/leave/OT etc.)
         2️⃣  Per‑day OT hours table (five‑row gap below table‑1).
+
+    * If **ot_filter** is supplied (iterable of *EmpCode* strings), the OT table
+      will include **only** those employees.  The main attendance table is left
+      intact.
 
     ▸ Shift‑aware late marks (>15 min)
     ▸ Half‑day rule  (4.5 h ≤ WH < 5.5 h  ⇒ 0.5P)
     ▸ OT rounding:  add 1 h if fractional ≥ 0.75 h
     ▸ C‑off: 0.5 (3.5–4 h extra), 1.0 (≥7 h extra)
     """
+
+    filter_set: Optional[set[str]] = (
+        {str(c).strip() for c in ot_filter} if ot_filter else None
+    )
 
     df = pd.read_excel(shifted_path)
     date_cols = df.columns[3:]
@@ -110,7 +127,8 @@ def build_master(shifted_path, save_path, analyze_comments=False, shifts_path=No
         if block.empty:
             continue
 
-        emp_id, emp_name = block.iloc[0][["EmpCode", "EmpName"]]
+        emp_id_raw, emp_name = block.iloc[0][["EmpCode", "EmpName"]]
+        emp_id = str(int(emp_id_raw)) if isinstance(emp_id_raw, (int, float)) else str(emp_id_raw).strip()
 
         status_row = block.loc[block["metric"] == "Status"].iloc[0, 3:]
         in_row     = block.loc[block["metric"] == "InTime"].iloc[0, 3:]
@@ -135,8 +153,7 @@ def build_master(shifted_path, save_path, analyze_comments=False, shifts_path=No
 
             override = {"force_status": None, "skip_half_day": False, "late_override": None, "extra_wh": 0.0}
             if analyze_comments:
-                key  = str(int(emp_id)) if isinstance(emp_id, (int, float)) else str(emp_id).strip()
-                note = comments_map.get(key, {}).get(idx)
+                note = comments_map.get(emp_id, {}).get(idx)
                 override = override_by_comment(note, t_in, t_out)
                 if override["extra_wh"]:
                     wh += override["extra_wh"]
@@ -197,17 +214,19 @@ def build_master(shifted_path, save_path, analyze_comments=False, shifts_path=No
             if wh:
                 working_hours.append(wh)
 
-                if wh > 8.5:
-                    raw_ot   = wh - 8.5
-                    ot_today = int(raw_ot) + (1 if raw_ot - int(raw_ot) >= 0.75 else 0)
-                    ot_hours += ot_today
-
-                # C‑off calculation ------------------------------------
                 extra = wh - 8.5
-                if 3.5 <= extra < 4.0:
-                    c_off += 0.5
-                elif extra >= 7.0:
-                    c_off += 1.0
+                if emp_id in filter_set if filter_set else True:
+                    # → Calculate OT only for filtered people
+                    if extra > 0:
+                        raw_ot = extra
+                        ot_today = int(raw_ot) + (1 if raw_ot - int(raw_ot) >= 0.75 else 0)
+                        ot_hours += ot_today
+                else:
+                    # → Calculate c-off only for non-OT people
+                    if 3.5 <= extra < 4.0:
+                        c_off += 0.5
+                    elif extra >= 7.0:
+                        c_off += 1.0
 
             daily_ots.append(ot_today)  # even if 0 (keeps column count consistent)
 
@@ -219,7 +238,9 @@ def build_master(shifted_path, save_path, analyze_comments=False, shifts_path=No
             c_off, 20, 19, od1, od2, avg_wh, ot_hours, late, "", ""
         ])
 
-        ot_rows.append([sr, emp_id, emp_name, *daily_ots, ot_hours])
+        # -- OT table row (filter aware) ------------------------------
+        if (filter_set is None) or (emp_id in filter_set):
+            ot_rows.append([sr, emp_id, emp_name, *daily_ots, ot_hours])
 
     # ---- build DataFrames -------------------------------------------
     day_headers = [d.strftime("%d") for d in pd.date_range(first_date, periods=num_days)]
@@ -234,23 +255,27 @@ def build_master(shifted_path, save_path, analyze_comments=False, shifts_path=No
     ot_cols = ["Sr. no.", "Emp. ID", "Emp. name"] + day_headers + ["Total OT"]
 
     df_master = pd.DataFrame(master_rows, columns=master_cols)
-    df_ot     = pd.DataFrame(ot_rows,     columns=ot_cols)
+    df_master.index += 1  # start index at 1 visually (optional)
+
+    df_ot = pd.DataFrame(ot_rows, columns=ot_cols) if ot_rows else pd.DataFrame(columns=ot_cols)
 
     # ---- write both tables with 5‑row spacing -----------------------
     with pd.ExcelWriter(save_path, engine="openpyxl") as writer:
         df_master.to_excel(writer, index=False, sheet_name="Sheet1", startrow=0)
-        df_ot.to_excel(writer,     index=False, sheet_name="Sheet1", startrow=len(df_master)+5)
+        if not df_ot.empty:
+            df_ot.to_excel(writer, index=False, sheet_name="Sheet1", startrow=len(df_master)+5)
 
     print(f"✅ MasterSheet + OT table saved → {save_path}")
 
 # ----- CLI helper ----------------------------------------------------
 if __name__ == "__main__":
-    import argparse
+    import argparse, json
     p = argparse.ArgumentParser(description="Build attendance master sheet (Knowchem)")
     p.add_argument("shifted", help="Path to shift‑aligned source Excel file")
     p.add_argument("output",  help="Path to save the generated master sheet")
     p.add_argument("--analyze-comments", action="store_true", help="Parse cell comments for overrides")
     p.add_argument("--shifts-file", help="Original shift file (required when --analyze-comments)")
+    p.add_argument("--ot-filter", help="Comma‑separated EmpCodes or @json file containing a list")
     args = p.parse_args()
 
     build_master(args.shifted, args.output,
