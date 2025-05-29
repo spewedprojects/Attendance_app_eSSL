@@ -3,6 +3,8 @@ from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 import sys, os
 
+from openpyxl.styles.builtins import styles
+
 # ── Hi-DPI / crisp text on Windows ───────────────────────────────────
 try:
     import ctypes
@@ -45,7 +47,7 @@ class AttendanceGUI(tk.Tk):
         scale = float(self.tk.call("tk", "scaling"))
         self.geometry(f"{int(base_w * scale)}x{int(base_h * scale)}")
         self.resizable(True, True)
-        version = "v3.2"
+        version = "v3.3"
         self.title(f"Attendance Master Sheet Filler — {version}")
 
         if ICON_PATH.exists():
@@ -133,11 +135,11 @@ class AttendanceGUI(tk.Tk):
         self._toggle_extra()
 
         ttk.Button(self, text="Run selected step", command=self._run_single, width=25).grid(
-            row=14, column=0, columnspan=2, pady=(6, 10)
+            row=17, column=0, columnspan=2, pady=(6, 10)
         )
 
-        ttk.Separator(self).grid(row=15, columnspan=2, sticky="ew")
-        ttk.Label(self, textvariable=self.status).grid(row=16, column=0, columnspan=2)
+        ttk.Separator(self).grid(row=19, columnspan=2, sticky="ew")
+        ttk.Label(self, textvariable=self.status).grid(row=20, column=0, columnspan=2)
 
     # ── Browse helpers ----------------------------------------------
     def _browse_raw(self):
@@ -176,9 +178,9 @@ class AttendanceGUI(tk.Tk):
         )
 
         if shown:
-            self.extra_lbl.grid(row=11, column=0, sticky="w", padx=6, pady=3)
-            self.extra_ent.grid(row=12, column=0, sticky="ew", padx=6, pady=3)
-            self.extra_btn.grid(row=12, column=1, padx=6, pady=3)
+            self.extra_lbl.grid(row=13, column=0, sticky="w", padx=6, pady=3)
+            self.extra_ent.grid(row=14, column=0, sticky="ew", padx=6, pady=3)
+            self.extra_btn.grid(row=14, column=1, padx=6, pady=3)
         else:
             self.extra_lbl.grid_remove()
             self.extra_ent.grid_remove()
