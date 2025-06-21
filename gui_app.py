@@ -2,45 +2,30 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
 import sys, os
-import re
-import json # For saving/loading settings
 
-# This import might not be strictly necessary if styles are not directly used,
-# but keeping it as it was in the original code.
 from openpyxl.styles.builtins import styles
 
 # ── Hi-DPI / crisp text on Windows ───────────────────────────────────
 try:
     import ctypes
-
     ctypes.windll.shcore.SetProcessDpiAwareness(1)
 except Exception:
     pass
 
 # ──  Icon path (works after PyInstaller) ─────────────────────────────
-APP_DIR = Path(getattr(sys, "_MEIPASS", os.getcwd()))
+APP_DIR   = Path(getattr(sys, "_MEIPASS", os.getcwd()))
 ICON_PATH = APP_DIR / "icon.ico"
-SETTINGS_FILE = APP_DIR / "settings.json" # Path for settings file
 guide_path = APP_DIR / "MasterSheet_Guide_Knowchem.pdf"
 
 # ──  Import processing functions  ──────────────────────────────────
-# Assuming these modules are available in the same directory or Python path
-from clean_workduration_mod import clean_raw
-from cleanup_2_mod import rectify_file
-from assign_shifttimes_cleanedup_mod import add_shifts
-from fill_master_shiftaware_mod import build_master  # This build_master needs to accept custom_shift_times
+from clean_workduration_mod           import clean_raw
+from cleanup_2_mod                    import rectify_file
+from assign_shifttimes_cleanedup_mod  import add_shifts
+from fill_master_shiftaware_mod       import build_master
+
 
 EXCEL_FILETYPES = [("Excel files", "*.xlsx *.xls"), ("All files", "*.*")]
 
-# --- Default Shift Times for Reset Functionality ---
-# These are the defaults that will be used if no settings file is found
-# or when the user clicks 'Reset'.
-DEFAULT_SHIFT_TIMES = {
-    "FS": "08:00 - 17:00",
-    "GS": "09:30 - 18:30",
-    "SS": "13:00 - 21:30",
-    "NS": "20:00 - 08:00",
-}
 
 class AttendanceGUI(tk.Tk):
     """Tkinter front‑end for the attendance pipeline.
@@ -53,23 +38,17 @@ class AttendanceGUI(tk.Tk):
         • The extra‑file selector (shown below the radio buttons) now appears when
           either the **Shift** step *or* the **Master** step + checkbox combo
           requires a second workbook.
-        • **Customizable Shift Times:** Added a menu option to allow users to define
-          custom start times for FS, GS, SS, and NS shifts, overriding defaults.
-        • **Integrated Instructions:** Added a menu option to open a PDF guide for users.
-        • **Persistent Shift Settings:** Shift times entered by the user are now saved
-          and loaded automatically on app launch.
         """
 
     def __init__(self):
         super().__init__()
 
         # ╭─ DPI‑aware window size ───────────────────────────────────╮
-        # A tad taller for the new checkbox and potentially the menu bar
-        base_w, base_h = 400, 310
+        base_w, base_h = 400, 310  # a tad taller for the new checkbox
         scale = float(self.tk.call("tk", "scaling"))
         self.geometry(f"{int(base_w * scale)}x{int(base_h * scale)}")
         self.resizable(True, True)
-        version = "v3.6"  # Updated version to reflect changes
+        version = "v3.4"
         self.title(f"Attendance Master Sheet Filler — {version}")
 
         if ICON_PATH.exists():
@@ -78,62 +57,18 @@ class AttendanceGUI(tk.Tk):
             except Exception:
                 pass
 
-        # Tk variables for GUI elements
-        self.raw_var = tk.StringVar()
-        self.shift_var = tk.StringVar()
-        self.analyze_comments = tk.BooleanVar(value=False)
-        self.status = tk.StringVar(value="Ready")
+        # Tk variables
+        self.raw_var      = tk.StringVar()
+        self.shift_var    = tk.StringVar()
+        self.analyze_comments = tk.BooleanVar(value=False)  # NEW
+        self.status       = tk.StringVar(value="Ready")
 
-        self.single_inp = tk.StringVar()
-        self.extra_var = tk.StringVar()
-        self.step_choice = tk.StringVar(value="clean")
-        self.filter_var = tk.StringVar()  # For OT Filter
-
-        # Tk variables for Custom shift time settings
-        # Initialize with default values first
-        self.shift_fs = tk.StringVar(value=DEFAULT_SHIFT_TIMES["FS"])
-        self.shift_gs = tk.StringVar(value=DEFAULT_SHIFT_TIMES["GS"])
-        self.shift_ss = tk.StringVar(value=DEFAULT_SHIFT_TIMES["SS"])
-        self.shift_ns = tk.StringVar(value=DEFAULT_SHIFT_TIMES["NS"])
-
-        self._load_settings() # Load settings after initializing StringVars
+        self.single_inp   = tk.StringVar()
+        self.extra_var    = tk.StringVar()
+        self.step_choice  = tk.StringVar(value="clean")
 
         self._build_menu()  # Add the menu bar
         self._build_widgets()
-
-    # ── Settings Load/Save -------------------------------------------
-    def _load_settings(self):
-        """Loads shift times from settings.json."""
-        if SETTINGS_FILE.exists():
-            try:
-                with open(SETTINGS_FILE, 'r') as f:
-                    settings = json.load(f)
-                self.shift_fs.set(settings.get("shift_fs", DEFAULT_SHIFT_TIMES["FS"]))
-                self.shift_gs.set(settings.get("shift_gs", DEFAULT_SHIFT_TIMES["GS"]))
-                self.shift_ss.set(settings.get("shift_ss", DEFAULT_SHIFT_TIMES["SS"]))
-                self.shift_ns.set(settings.get("shift_ns", DEFAULT_SHIFT_TIMES["NS"]))
-            except Exception as e:
-                print(f"Error loading settings: {e}")
-                # Optionally show a messagebox here, but might be annoying on every launch
-                self.status.set("Warning: Could not load settings.")
-        else:
-            # If settings file doesn't exist, ensure default values are used (already set in __init__)
-            pass
-
-    def _save_settings(self):
-        """Saves current shift times to settings.json."""
-        settings = {
-            "shift_fs": self.shift_fs.get(),
-            "shift_gs": self.shift_gs.get(),
-            "shift_ss": self.shift_ss.get(),
-            "shift_ns": self.shift_ns.get(),
-        }
-        try:
-            with open(SETTINGS_FILE, 'w') as f:
-                json.dump(settings, f, indent=4)
-        except Exception as e:
-            messagebox.showerror("Save Error", f"Could not save settings: {e}")
-            self.status.set("Error: Settings not saved.")
 
     # ── Menu Bar and Settings ----------------------------------------
     def _build_menu(self):
@@ -141,49 +76,8 @@ class AttendanceGUI(tk.Tk):
         self.config(menu=menubar)
 
         settings_menu = tk.Menu(menubar, tearoff=0)
-        settings_menu.add_command(label="Edit Shift Times", command=self._open_shift_settings)
         settings_menu.add_command(label="View Instructions", command=self._open_instructions)
         menubar.add_cascade(label="Options", menu=settings_menu)
-
-    def _open_shift_settings(self):
-        win = tk.Toplevel(self)
-        win.title("Edit Shift Start & End Times") # Updated title
-        win.geometry("500x300") # Adjusted size for better fit
-        win.transient(self)  # Make it appear on top of the main window
-        win.grab_set()  # Make it modal
-
-        pad = {"padx": 6, "pady": 4}
-
-        ttk.Label(win, text="Enter times in HH:MM - HH:MM format").grid(
-            row=0, column=0, columnspan=2, sticky="w", **pad
-        )
-
-        for i, (label_text, var) in enumerate([
-            ("FS (First Shift):", self.shift_fs),
-            ("GS (General Shift):", self.shift_gs),
-            ("SS (Second Shift):", self.shift_ss),
-            ("NS (Night Shift):", self.shift_ns),
-        ], start=1):  # Start from row 1 to accommodate the instruction label
-            ttk.Label(win, text=label_text).grid(row=i, column=0, sticky="w", **pad)
-            ttk.Entry(win, textvariable=var, width=20).grid(row=i, column=1, **pad) # Wider entry field
-
-        # Buttons for Apply and Reset
-        button_frame = ttk.Frame(win)
-        button_frame.grid(row=5, column=0, columnspan=2, pady=10)
-
-        ttk.Button(button_frame, text="Apply", command=lambda: [self._save_settings(), win.destroy()]).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="Reset", command=self._reset_shift_times).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="Close", command=win.destroy).pack(side="left", padx=5) # 'Close' without saving
-
-        self.wait_window(win)  # Wait for the Toplevel window to close
-
-    def _reset_shift_times(self):
-        """Resets shift time entry fields to their default hardcoded values."""
-        self.shift_fs.set(DEFAULT_SHIFT_TIMES["FS"])
-        self.shift_gs.set(DEFAULT_SHIFT_TIMES["GS"])
-        self.shift_ss.set(DEFAULT_SHIFT_TIMES["SS"])
-        self.shift_ns.set(DEFAULT_SHIFT_TIMES["NS"])
-        messagebox.showinfo("Reset", "Shift times reset to defaults. Click Apply to save.")
 
     def _open_instructions(self):
         import subprocess
@@ -205,22 +99,8 @@ class AttendanceGUI(tk.Tk):
             messagebox.showinfo("Missing",
                                 f"Instructions PDF not found at:\n{guide_path}\nPlease ensure 'MasterSheet_Guide_Knowchem.pdf' is in the same folder as the executable.")
 
-    def _get_custom_shift_dict(self):
-        custom_shifts = {}
-        # Pass the full HH:MM - HH:MM string to build_master
-        for k, var in {
-            "FS": self.shift_fs,
-            "GS": self.shift_gs,
-            "SS": self.shift_ss,
-            "NS": self.shift_ns
-        }.items():
-            val = var.get().strip()
-            # Basic validation for HH:MM - HH:MM format or single HH:MM
-            if re.match(r"^\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}$", val) or re.match(r"^\d{1,2}:\d{2}$", val):
-                custom_shifts[k] = val
-        return custom_shifts if custom_shifts else None  # Return None if no valid custom shifts
 
-    # ── UI layout (unchanged) ----------------------------------------
+    # ── UI layout ----------------------------------------------------
     def _build_widgets(self):
         pad = {"padx": 8, "pady": 4}
 
@@ -239,23 +119,24 @@ class AttendanceGUI(tk.Tk):
         )
         ttk.Button(self, text="Browse…", command=self._browse_shift).grid(row=4, column=1, **pad)
 
-        # NEW checkbox (already in Code 1)
+        # NEW checkbox
         ttk.Checkbutton(
             self,
             text="Analyze comments from shifts file",
             variable=self.analyze_comments,
         ).grid(row=5, column=0, columnspan=2, sticky="w", **pad)
 
-        # OT Filter (already in Code 1)
+        ttk.Button(self, text="Run full pipeline", command=self._run_full, width=25).grid(
+            row=8, column=0, columnspan=2, pady=(6, 4)
+        )
+
+        # OT Filter — appears just *below* button and *above* separator
         ttk.Label(self, text="EmpCodes for OT table (comma-separated):").grid(
             row=6, column=0, sticky="w", **pad
         )
+        self.filter_var = tk.StringVar()
         ttk.Entry(self, textvariable=self.filter_var, width=55).grid(
             row=7, column=0, columnspan=2, sticky="ew", **pad
-        )
-
-        ttk.Button(self, text="Run full pipeline", command=self._run_full, width=25).grid(
-            row=8, column=0, columnspan=2, pady=(6, 4)
         )
 
         ttk.Separator(self).grid(row=9, columnspan=2, sticky="ew", pady=(2, 4))
@@ -283,7 +164,7 @@ class AttendanceGUI(tk.Tk):
         self.extra_lbl = ttk.Label(self, text="Shifts file / Save-to:")
         self.extra_ent = ttk.Entry(self, textvariable=self.extra_var, width=55, state="readonly")
         self.extra_btn = ttk.Button(self, text="Browse…", command=self._browse_extra)
-        self._toggle_extra()  # Initialize state
+        self._toggle_extra()
 
         ttk.Button(self, text="Run selected step", command=self._run_single, width=25).grid(
             row=17, column=0, columnspan=2, pady=(6, 10)
@@ -292,7 +173,7 @@ class AttendanceGUI(tk.Tk):
         ttk.Separator(self).grid(row=19, columnspan=2, sticky="ew")
         ttk.Label(self, textvariable=self.status).grid(row=20, column=0, columnspan=2)
 
-    # ── Browse helpers (unchanged) ----------------------------------
+    # ── Browse helpers ----------------------------------------------
     def _browse_raw(self):
         path = filedialog.askopenfilename(filetypes=EXCEL_FILETYPES)
         if path:
@@ -313,22 +194,19 @@ class AttendanceGUI(tk.Tk):
         if choice in ("shift",):
             path = filedialog.askopenfilename(filetypes=EXCEL_FILETYPES)
         elif choice in ("master",):
-            # When building master, this extra file is the save path for the output
-            path = filedialog.asksaveasfilename(
-                defaultextension=".xlsx", filetypes=EXCEL_FILETYPES
-            )
-        else:
+            path = filedialog.askopenfilename(filetypes=EXCEL_FILETYPES)
+        else:  # save destination
             path = filedialog.asksaveasfilename(
                 defaultextension=".xlsx", filetypes=EXCEL_FILETYPES
             )
         if path:
             self.extra_var.set(path)
 
-    # ── Toggle extra-file row based on radio selection (unchanged, but note 'False' for clean/rectify)
+    # ── Toggle extra-file row based on radio selection --------------
     def _toggle_extra(self):
         choice = self.step_choice.get()
         shown = choice in ("shift", "master") or (
-                choice in ("rectify", "clean") and False
+            choice in ("rectify", "clean") and False
         )
 
         if shown:
@@ -340,9 +218,9 @@ class AttendanceGUI(tk.Tk):
             self.extra_ent.grid_remove()
             self.extra_btn.grid_remove()
 
-    # ── Run buttons (unchanged logic for calling build_master with custom_shift_times) -------------------------------------------------
+    # ── Run buttons -------------------------------------------------
     def _run_full(self):
-        raw = Path(self.raw_var.get())
+        raw   = Path(self.raw_var.get())
         shift = Path(self.shift_var.get())
 
         if not raw.exists() or not shift.exists():
@@ -370,16 +248,12 @@ class AttendanceGUI(tk.Tk):
 
             self.status.set("Building master…")
             filt = [c.strip() for c in self.filter_var.get().split(",") if c.strip()]
-
-            custom_times = self._get_custom_shift_dict()
-
             build_master(
                 shifted,
                 Path(save_to),
                 analyze_comments=self.analyze_comments.get(),
                 shifts_path=shift,
-                ot_filter=filt or None,
-                custom_shift_times=custom_times
+                ot_filter=filt or None,  # None ⇒ include everyone
             )
 
             self.status.set("✔ Full pipeline done")
@@ -397,15 +271,12 @@ class AttendanceGUI(tk.Tk):
         try:
             step = self.step_choice.get()
             if step == "clean":
-                self.status.set("Cleaning raw…")
                 clean_raw(inp)
                 messagebox.showinfo("Done", "Raw file cleaned.")
             elif step == "rectify":
-                self.status.set("Rectifying blanks…")
                 rectify_file(inp)
                 messagebox.showinfo("Done", "Blanks rectified.")
             elif step == "shift":
-                self.status.set("Adding shifts…")
                 shifts = Path(self.extra_var.get())
                 if not shifts.exists():
                     messagebox.showwarning("Missing shifts", "Select the shifts file.")
@@ -413,24 +284,18 @@ class AttendanceGUI(tk.Tk):
                 add_shifts(inp, shifts)
                 messagebox.showinfo("Done", "Shifts added.")
             elif step == "master":
-                self.status.set("Building master…")
                 save_to = filedialog.asksaveasfilename(
                     defaultextension=".xlsx", filetypes=EXCEL_FILETYPES
                 )
                 if not save_to:
-                    self.status.set("Cancelled")
                     return
                 filt = [c.strip() for c in self.filter_var.get().split(",") if c.strip()]
-
-                custom_times = self._get_custom_shift_dict()
-
                 build_master(
                     inp,
                     Path(save_to),
                     analyze_comments=self.analyze_comments.get(),
                     shifts_path=Path(self.extra_var.get()) if self.analyze_comments.get() else None,
-                    ot_filter=filt or None,
-                    custom_shift_times=custom_times
+                    ot_filter = filt or None  # ← add here too
                 )
                 messagebox.showinfo("Done", f"Master sheet saved:\n{save_to}")
             self.status.set("✔ Completed")

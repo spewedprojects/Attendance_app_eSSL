@@ -1,62 +1,29 @@
 import pandas as pd
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 import re
 from openpyxl import load_workbook
 from dateutil import parser as dt_parser
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional
 
-# ── Original v3.3 shift start times (for reference when parsing comments) ──
-# This dict will be used to look up default start times.
-# For custom shifts, we will use the full range.
-SHIFT_START_DEFAULTS = {
-    "FS": "08:00", "First": "08:00",
-    "GS": "09:30", "General": "09:30",
-    "SS": "11:30", "Second": "11:30",  # Adjusted from v3.3 based on typical SS
-    "NS": "20:30", "Night": "20:30",
-}
-
-# ── Full shift ranges for expected duration and correct overnight handling ──
-# This will be the primary source for shift parsing, especially if custom shifts are ranges.
-# If custom_shift_times only provide a start, we'll combine with these default ends.
-DEFAULT_SHIFT_RANGES = {
-    "FS": "08:00 - 17:00", "First": "08:00 - 17:00",
-    "GS": "09:30 - 18:30", "General": "09:30 - 18:30",
-    "SS": "13:00 - 21:30", "Second": "13:00 - 21:30",  # Adjusted from v3.3 SS for a full shift range
-    "NS": "20:00 - 08:00", "Night": "20:00 - 08:00",  # Next day
+# ── shift start times used for late‑mark check ───────────────────────
+shift_start = {
+    "FS": "08:00",  "First":   "08:00",
+    "GS": "09:30",  "General": "09:30",
+    "SS": "13:00",  "Second":  "21:30",
+    "NS": "20:30",  "Night":   "20:30",
 }
 
 
-def _parse_hhmm(txt: str) -> Optional[datetime]:
-    """Parses a string 'HH:MM' into a datetime object (date is arbitrary)."""
+def _parse_hhmm(txt: str):
     try:
         return datetime.strptime(txt.strip(), "%H:%M")
-    except ValueError:
+    except Exception:
         return None
-
-
-def _parse_hhmm_range(time_range_str: str) -> Tuple[Optional[datetime], Optional[datetime]]:
-    """
-    Parses a string 'HH:MM - HH:MM' into a tuple of (start_datetime, end_datetime).
-    Handles overnight shifts (end_time < start_time implies next day).
-    """
-    time_range_str = time_range_str.strip()
-    parts = re.split(r'\s*-\s*', time_range_str)
-
-    if len(parts) == 2:
-        start_time = _parse_hhmm(parts[0])
-        end_time = _parse_hhmm(parts[1])
-        if start_time and end_time:
-            # If end time is earlier than start time, assume it's on the next day
-            if end_time < start_time:
-                end_time += timedelta(days=1)
-            return start_time, end_time
-    return None, None  # Invalid format or single time string (not a range)
-
 
 # -- Analyze comments/notes logic -----------------------------------
 
-def override_by_comment(note: str, t_in: Optional[datetime], t_out: Optional[datetime]) -> dict:
+def override_by_comment(note, t_in, t_out):
     """Detect keywords in cell‑comments and override daily status / OT logic."""
     o = {"force_status": None, "skip_half_day": False, "late_override": None, "extra_wh": 0.0}
     if not note:
@@ -74,356 +41,243 @@ def override_by_comment(note: str, t_in: Optional[datetime], t_out: Optional[dat
         o["skip_half_day"] = True
         return o
 
-    # Combined logic for "out:" comments: prioritize specific HH:MM parsing
-    # and also handle "out: and back in:" for extra_wh calculation.
-    if "out:" in nl:
-        if "back in:" in nl:
-            # v3.3 original logic for "out: and back in:"
-            times = re.findall(r'(\d{1,2}[:\.]\d{1,2}\s*(?:am|pm)?)', note, re.I)
-            parsed_times = []
-            for t_str in times:
-                try:
-                    parsed_times.append(dt_parser.parse(t_str, fuzzy=True))
-                except Exception:
-                    pass
-            if len(parsed_times) >= 2:
-                diff = (parsed_times[1] - parsed_times[0]).total_seconds() / 3600
-                o["extra_wh"] = diff
-            o["force_status"] = "P"
-            o["skip_half_day"] = True  # Original v3.3 behavior
-        else:
-            # More robust 'out:HH:MM' or 'out:HHMM' parsing
+    if "out:" in nl and "back in:" in nl:
+        times = re.findall(r'(\d{1,2}[:\.]\d{1,2}\s*(?:am|pm)?)', note, re.I)
+        parsed = []
+        for t in times:
             try:
-                parts = nl.split("out:")
-                out_str = parts[1].strip()
-                forced_out = None
-                if re.match(r"^\d{1,2}:\d{2}$", out_str):
-                    forced_out = datetime.strptime(out_str, "%H:%M")
-                elif re.match(r"^\d{3,4}$", out_str):
-                    if len(out_str) == 3: out_str = '0' + out_str
-                    forced_out = datetime.strptime(out_str, "%H%M")
-
-                if forced_out and t_in:
-                    if forced_out < t_in:  # Handle overnight forced out
-                        forced_out += timedelta(days=1)
-                    o["extra_wh"] = (forced_out - t_in).total_seconds() / 3600
-                    o["force_status"] = "P"  # Force presence if out time is recorded
+                parsed.append(dt_parser.parse(t, fuzzy=True))
             except Exception:
-                pass  # Malformed "out:" comment, ignore
-
-    if nl.startswith("in:"):  # v3.3 original logic
+                pass
+        if len(parsed) >= 2:
+            diff = (parsed[1] - parsed[0]).seconds / 3600
+            o["extra_wh"] = diff
         o["force_status"] = "P"
         o["skip_half_day"] = True
-        o["late_override"] = False  # This means late is explicitly overridden to false
-        return o  # Return immediately if "in:" is the primary directive
+        return o
 
-    if "late:" in nl:  # Improved late override logic
-        try:
-            parts = nl.split("late:")
-            late_min_str = parts[1].strip()
-            late_minutes = int(late_min_str)
-            o["late_override"] = late_minutes
-        except Exception:
-            pass  # Malformed "late:" comment, ignore
+    if nl.startswith("in:"):
+        o["force_status"] = "P"
+        o["skip_half_day"] = True
+        o["late_override"] = False
+        return o
+
+    if nl.startswith("out:"):
+        o["force_status"] = "P"
+        o["skip_half_day"] = True
+        return o
 
     return o
 
 
 def build_master(
-        shifted_path: Path,  # Changed to Path, assuming gui_app passes a Path object
-        save_path: Path,  # Changed to Path
-        analyze_comments: bool = False,
-        shifts_path: Optional[Path] = None,  # Changed to Path
-        ot_filter: Optional[Iterable[str]] = None,  # Keep as Iterable[str]
-        custom_shift_times: Optional[dict] = None,  # Custom shift times from GUI (HH:MM - HH:MM)
+    shifted_path,
+    save_path,
+    analyze_comments: bool = False,
+    shifts_path: Optional[str] = None,
+    ot_filter: Optional[Iterable[str]] = None,
 ):
     """
-    Builds the final master attendance sheet and an OT sheet.
-    Incorporates custom shift times and comment analysis.
+    Build master sheet with **two** tables:
+        1️⃣  Existing attendance summary (status/leave/OT etc.)
+        2️⃣  Per‑day OT hours table (five‑row gap below table‑1).
 
-    Args:
-        shifted_path (Path): Path to the DataFrame after shifts have been added.
-        save_path (Path): Path to save the output Excel file.
-        analyze_comments (bool): Whether to analyze cell comments in the shifts file.
-        shifts_path (Optional[Path]): Path to the original shifts file, required if analyze_comments is True.
-        ot_filter (Optional[Iterable[str]]): List of employee IDs to filter for the OT table.
-        custom_shift_times (Optional[dict]): Dictionary of custom shift time strings
-                                              (e.g., {"FS": "08:00 - 17:00"}).
+    * If **ot_filter** is supplied (iterable of *EmpCode* strings), the OT table
+      will include **only** those employees.  The main attendance table is left
+      intact.
+
+    ▸ Shift‑aware late marks (>15 min)
+    ▸ Half‑day rule  (4.5 h ≤ WH < 5.5 h  ⇒ 0.5P)
+    ▸ OT rounding:  add 1 h if fractional ≥ 0.75 h
+    ▸ C‑off: 0.5 (3.5–4 h extra), 1.0 (≥7 h extra)
     """
-    # Defensive checks to ensure paths are Path objects if they came as strings
-    if not isinstance(shifted_path, Path):
-        shifted_path = Path(shifted_path)
-    if analyze_comments and shifts_path and not isinstance(shifts_path, Path):
-        shifts_path = Path(shifts_path)
-    if not isinstance(save_path, Path):
-        save_path = Path(save_path)
-
-    if analyze_comments and not shifts_path:
-        raise ValueError("shifts_path must be provided if analyze_comments is True.")
-
-    df = pd.read_excel(shifted_path)
-
-    wb = None
-    if analyze_comments:
-        try:
-            wb = load_workbook(shifts_path, data_only=True)
-            ws = wb.active
-        except Exception as e:
-            print(f"Warning: Could not load shifts file for comment analysis: {e}")
-            analyze_comments = False
-
-    # ── Prepare shift schedules (combining defaults and custom) ────────────────
-    # This will hold the parsed datetime objects for start and end times for each shift code
-    parsed_shift_schedules = {}
-
-    # 1. Start with default shift ranges (for full duration calculation)
-    for code, time_range_str in DEFAULT_SHIFT_RANGES.items():
-        start_dt, end_dt = _parse_hhmm_range(time_range_str)
-        if start_dt and end_dt:
-            parsed_shift_schedules[code] = {"start": start_dt, "end": end_dt}
-
-    # 2. Override with custom shift times if provided (these are full HH:MM - HH:MM ranges)
-    if custom_shift_times:
-        for k, v_range_str in custom_shift_times.items():
-            start_dt, end_dt = _parse_hhmm_range(v_range_str)
-            if start_dt and end_dt:
-                parsed_shift_schedules[k] = {"start": start_dt, "end": end_dt}
-            elif start_dt:  # If only start is valid, (e.g., custom was just HH:MM)
-                # Try to use default end time if a custom start was given but no end
-                default_end_dt = parsed_shift_schedules.get(k, {}).get("end")
-                if default_end_dt:
-                    if default_end_dt < start_dt:
-                        default_end_dt += timedelta(days=1)  # Ensure overnight if needed
-                    parsed_shift_schedules[k] = {"start": start_dt, "end": default_end_dt}
-                else:
-                    parsed_shift_schedules[k] = {"start": start_dt, "end": None}  # No end known
-
-    # Fallback default for schedule if a shift code isn't found
-    default_sched_start_fallback = _parse_hhmm(SHIFT_START_DEFAULTS["GS"])  # Use General Shift start as default
-    default_sched_end_fallback = parsed_shift_schedules.get("GS", {}).get("end") or _parse_hhmm(
-        DEFAULT_SHIFT_RANGES["GS"].split('-')[1].strip())
-    if default_sched_start_fallback and default_sched_end_fallback and default_sched_end_fallback < default_sched_start_fallback:
-        default_sched_end_fallback += timedelta(days=1)
-
-    # Fallback for just shift_start lookup (for late mark calculation if specific shift isn't found)
-    default_late_check_start_fallback = _parse_hhmm(SHIFT_START_DEFAULTS["GS"])
-
-    # ---- Extract date columns and first date (v3.3 original logic) ------------------------
-    date_cols = df.columns[3:]
-    num_days = len(date_cols)
-
-    # Use a consistent year for parsing date headers (e.g., "01-Jan"). Original v3.3 used 2025.
-    first_date = datetime.strptime(f"{date_cols[0].strip()}-2025", "%d-%b-%Y")
-
-    # ---- pull comments (optional) (v3.3 original logic) ---------------------------------
-    comments_map = {}
-    if analyze_comments and wb:
-        ws = wb.active
-        for row_idx, row in enumerate(ws.iter_rows(min_row=2)):
-            emp_id_cell = row[1]
-            if emp_id_cell.value is None:
-                continue
-
-            emp_id_val = str(int(emp_id_cell.value)) if isinstance(emp_id_cell.value, (int, float)) else str(
-                emp_id_cell.value).strip()
-            comments_map.setdefault(emp_id_val, {})
-            # Loop through cells corresponding to date columns (starting from index 3)
-            for col_idx_excel, cell in enumerate(row[3:3 + num_days]):
-                if cell.comment and cell.comment.text.strip():
-                    comments_map[emp_id_val][col_idx_excel] = cell.comment.text.strip()
-
-    # ---- Iterate 9‑row employee blocks (v3.3 original logic) ----------------------------
-    master_rows, ot_rows = [], []
-    block_size = 9
 
     filter_set: Optional[set[str]] = (
         {str(c).strip() for c in ot_filter} if ot_filter else None
     )
 
-    for sr_idx, top in enumerate(range(0, len(df), block_size), start=1):
-        block = df.iloc[top: top + block_size]
+    df = pd.read_excel(shifted_path)
+    date_cols = df.columns[3:]
+    num_days = len(date_cols)
+    first_date = datetime.strptime(f"{date_cols[0]}-2025", "%d-%b-%Y")
+
+    # ---- pull comments (optional) ---------------------------------
+    comments_map = {}
+    if analyze_comments:
+        if not shifts_path:
+            raise ValueError("shifts_path must be provided when analyze_comments=True")
+        wb = load_workbook(shifts_path, data_only=True)
+        ws = wb.active
+        for row in ws.iter_rows(min_row=2):
+            raw = row[1].value
+            if raw is None:
+                continue
+            code = str(int(raw)) if isinstance(raw, (int, float)) else str(raw).strip()
+            comments_map.setdefault(code, {})
+            for idx, cell in enumerate(row[3:3 + num_days]):
+                if cell.comment and cell.comment.text.strip():
+                    comments_map[code][idx] = cell.comment.text.strip()
+
+    # ---- iterate 9‑row employee blocks ----------------------------
+    master_rows, ot_rows = [], []
+    block_size = 9
+
+    for sr, top in enumerate(range(0, len(df), block_size), start=1):
+        block = df.iloc[top:top + 8]
         if block.empty:
             continue
 
-        emp_id_raw, emp_name_raw = block.iloc[0][["EmpCode", "EmpName"]]
+        emp_id_raw, emp_name = block.iloc[0][["EmpCode", "EmpName"]]
         emp_id = str(int(emp_id_raw)) if isinstance(emp_id_raw, (int, float)) else str(emp_id_raw).strip()
-        emp_name = str(emp_name_raw).strip()
 
-        # Extract rows by metric, focusing on the date columns (from index 3 onwards)
         status_row = block.loc[block["metric"] == "Status"].iloc[0, 3:]
-        in_row = block.loc[block["metric"] == "InTime"].iloc[0, 3:]
-        out_row = block.loc[block["metric"] == "OutTime"].iloc[0, 3:]
-        shift_row = block.loc[block["metric"] == "Shift"].iloc[0, 3:]
-        late_by_row = block.loc[block["metric"] == "Late By"].iloc[0, 3:]
+        in_row     = block.loc[block["metric"] == "InTime"].iloc[0, 3:]
+        out_row    = block.loc[block["metric"] == "OutTime"].iloc[0, 3:]
+        shift_row  = block.loc[block["metric"] == "Shift"].iloc[0, 3:]
+        late_by    = block.loc[block["metric"] == "Late By"].iloc[0, 3:]
 
-        present = 0
-        leave = 0
+        present = leave = od1 = od2 = late = 0
+        ot_hours = 0
         c_off = 0.0
-        od1 = 0
-        od2 = 0
-        ot_hours_total = 0  # Accumulate OT hours for this employee, only if in filter
-        late = 0
-        total_actual_wh = 0.0  # Total actual working hours for average calculation
-
-        daily_status_list = []
-        daily_ots_list = []
-
-        emp_comments_map = comments_map.get(emp_id, {}) if analyze_comments else {}
+        working_hours = []
+        daily_status, daily_ots = [], []  #  ← NEW: per‑day OT collection
 
         # ── per‑date loop ───────────────────────────────────────────
-        for day_idx, col_date_str in enumerate(date_cols):
-            status = str(status_row.get(col_date_str, "")).strip()
+        for idx, col in enumerate(status_row.index):
+            status = str(status_row[col]).strip()
 
-            t_in = _parse_hhmm(str(in_row.get(col_date_str)))
-            t_out = _parse_hhmm(str(out_row.get(col_date_str)))
+            # worked hours ------------------------------------------------
+            t_in  = _parse_hhmm(str(in_row[col]))
+            t_out = _parse_hhmm(str(out_row[col]))
+            wh = (t_out - t_in).seconds / 3600 if (t_in and t_out and t_out > t_in) else 0
 
-            wh_today = 0.0  # Initialize for current day
-            comment_override = {"force_status": None, "skip_half_day": False, "late_override": None, "extra_wh": 0.0}
-
+            override = {"force_status": None, "skip_half_day": False, "late_override": None, "extra_wh": 0.0}
             if analyze_comments:
-                comment_text = emp_comments_map.get(day_idx)
-                if comment_text:
-                    comment_override = override_by_comment(comment_text, t_in, t_out)
+                note = comments_map.get(emp_id, {}).get(idx)
+                override = override_by_comment(note, t_in, t_out)
+                if override["extra_wh"]:
+                    wh += override["extra_wh"]
 
-            # Re-calculate t_out if extra_wh is provided by comment
-            if comment_override["extra_wh"] > 0 and t_in:
-                t_out = t_in + timedelta(hours=comment_override["extra_wh"])
-                # Ensure t_out is on the correct day for duration calculation
-                if t_out < t_in:  # If adding hours somehow pushed it back (unlikely but defensive)
-                    t_out += timedelta(days=1)
+            # half‑day rule ---------------------------------------------
+            if status == "P" and not override["skip_half_day"]:
+                if 4.5 <= wh < 5.5:
+                    status = "0.5P"
 
-            # Calculate working hours (wh_today)
-            if t_in and t_out:
-                wh_today = (t_out - t_in).total_seconds() / 3600
-                # Handle overnight shifts where t_out is effectively next day
-                if t_out < t_in:
-                    wh_today = ((t_out + timedelta(days=1)) - t_in).total_seconds() / 3600
-            else:
-                wh_today = 0.0  # No valid in/out times
-
-            # --- Determine Final Status ---
-            final_status = status  # Start with existing status from Excel
-
-            if comment_override["force_status"]:  # Comment override takes precedence
-                final_status = comment_override["force_status"]
-            elif final_status == "P" or final_status == "":  # If initially 'P' or empty, apply rules
-                if wh_today >= 7.0:
-                    final_status = "P"
-                elif 3.0 <= wh_today < 7.0:  # Half day condition
-                    if not comment_override["skip_half_day"]:
-                        final_status = "0.5P"
-                    else:
-                        final_status = "P"  # Skip half-day if comment implies (e.g. short leave)
-                else:
-                    final_status = "A"  # Default to Absent if less than 3 hours
-
-            # Update counters based on final_status
-            if final_status == "P":
-                present += 1
-            elif final_status == "0.5P":
-                present += 0.5
-            elif final_status == "L":
-                present += 1
-            elif final_status == "OD1":
-                present += 1
-                od1 += 1
-            elif final_status == "OD2":
-                present += 1
-                od2 += 1
-            elif final_status == "Leave":
-                leave += 1
-            elif final_status == "C-off":
-                c_off += 1
-
-            # --- Late Mark Calculation ---
+            # late mark --------------------------------------------------
             late_flag = False
-            if final_status in ["P", "0.5P", "L", "OD1", "OD2"] and t_in:  # Only check late if present and has in time
-                shift_code = str(shift_row.get(col_date_str, "")).strip()
-
-                # Get scheduled start time: prioritize parsed_shift_schedules, then SHIFT_START_DEFAULTS
-                scheduled_start_for_late_check = parsed_shift_schedules.get(shift_code, {}).get("start")
-                if not scheduled_start_for_late_check:  # Fallback to SHIFT_START_DEFAULTS for single HH:MM
-                    sched_str = SHIFT_START_DEFAULTS.get(shift_code, SHIFT_START_DEFAULTS["GS"])
-                    scheduled_start_for_late_check = _parse_hhmm(sched_str)
-
-                if scheduled_start_for_late_check:
-                    late_threshold_minutes = 15  # Default
-                    if comment_override["late_override"] is not None:
-                        late_threshold_minutes = comment_override["late_override"]
-
-                    if (t_in - scheduled_start_for_late_check).total_seconds() / 60 > late_threshold_minutes:
-                        late_flag = True
-                else:  # If no scheduled start time found, try using Late By column as fallback for 'late' status
-                    late_txt = str(late_by_row.get(col_date_str, "")).strip()
-                    if late_txt and late_txt != "00:00":
-                        lt_dt = _parse_hhmm(late_txt)
-                        if lt_dt and (lt_dt.hour * 60 + lt_dt.minute) > 15:
-                            late_flag = True
-
-            if late_flag:
-                late += 1
-                if final_status == "P":  # Change 'P' to 'L' if late
-                    final_status = "L"
-
-            daily_status_list.append(final_status)
-
-            # --- Overtime (OT) and C-off logic (v3.3 logic) -------------------------
-            ot_today = 0
-            if wh_today > 0:  # Only count if there was actual working time
-                total_actual_wh += wh_today  # For average calculation
-
-                extra_hours = wh_today - 8.5  # OT calculation based on 8.5 hours working day
-
-                if (filter_set is None) or (emp_id in filter_set):
-                    # Calculate OT only for filtered people
-                    if extra_hours > 0:
-                        raw_ot = extra_hours
-                        ot_today = int(raw_ot) + (1 if (raw_ot - int(raw_ot)) >= 0.75 else 0)
-                        ot_hours_total += ot_today
+            if status == "P":
+                shift_code = str(shift_row[col]).strip()
+                sched_str  = shift_start.get(shift_code, "09:30")
+                t_sched = _parse_hhmm(sched_str)
+                if t_sched and t_in:
+                    late_flag = (t_in - t_sched).total_seconds() / 60 > 15
                 else:
-                    # Calculate c-off only for non-OT people
-                    if 3.5 <= extra_hours < 4.0:
+                    late_txt = str(late_by[col]).strip()
+                    if late_txt and late_txt != "00:00":
+                        lt = _parse_hhmm(late_txt)
+                        late_flag = lt and (lt.hour * 60 + lt.minute) > 15
+
+                if override["late_override"] is not None:
+                    late_flag = override["late_override"]
+
+            if override["force_status"] is not None:
+                status = override["force_status"]
+
+            # ---- set master status & counters -------------------------
+            if status == "P":
+                present += 1
+                late    += int(late_flag)
+                daily_status.append("L" if late_flag else "P")
+            elif status == "0.5P":
+                present += 0.5
+                daily_status.append("0.5P")
+            elif status == "A":
+                leave += 1
+                daily_status.append("A")
+            elif status == "L":
+                present += 1
+                late    += 1
+                daily_status.append("L")
+            elif status == "OD1":
+                present += 1
+                od1    += 1
+                daily_status.append("OD1")
+            elif status == "OD2":
+                present += 1
+                od2    += 1
+                daily_status.append("OD2")
+            else:
+                daily_status.append("")
+
+            # ---- OT logic ---------------------------------------------
+            ot_today = 0
+            if wh:
+                working_hours.append(wh)
+
+                extra = wh - 8.5
+                if emp_id in filter_set if filter_set else True:
+                    # → Calculate OT only for filtered people
+                    if extra > 0:
+                        raw_ot = extra
+                        ot_today = int(raw_ot) + (1 if raw_ot - int(raw_ot) >= 0.75 else 0)
+                        ot_hours += ot_today
+                else:
+                    # → Calculate c-off only for non-OT people
+                    if 3.5 <= extra < 4.0:
                         c_off += 0.5
-                    elif extra_hours >= 7.0:
+                    elif extra >= 7.0:
                         c_off += 1.0
 
-            daily_ots_list.append(f"{ot_today:.2f}")  # Format OT to 2 decimal places
+            daily_ots.append(ot_today)  # even if 0 (keeps column count consistent)
 
-        # ── End of per‑date loop ────────────────────────────────────
-
-        avg_wh = round(total_actual_wh / num_days, 2) if num_days > 0 else 0  # Average for all days in the period
+        avg_wh = round(sum(working_hours) / len(working_hours), 2) if working_hours else 0
 
         master_rows.append([
-            sr_idx + 1, emp_id, emp_name, *daily_status_list,
-            present, leave, 5, 0, num_days,  # 5 W. off, 0 Holiday (hardcoded as per original)
-            c_off, 20, 19, od1, od2, avg_wh, ot_hours_total, late, "", ""  # 20 TA adjusted, 19 TA (hardcoded)
+            sr, emp_id, emp_name, *daily_status,
+            present, leave, 5, 0, num_days,
+            c_off, 20, 19, od1, od2, avg_wh, ot_hours, late, "", ""
         ])
 
         # -- OT table row (filter aware) ------------------------------
         if (filter_set is None) or (emp_id in filter_set):
-            ot_rows.append([sr_idx + 1, emp_id, emp_name, *daily_ots_list, ot_hours_total])
+            ot_rows.append([sr, emp_id, emp_name, *daily_ots, ot_hours])
 
-    # ---- build DataFrames ------------------------------------------
+    # ---- build DataFrames -------------------------------------------
     day_headers = [d.strftime("%d") for d in pd.date_range(first_date, periods=num_days)]
 
     master_cols = (
-            ["Sr. no.", "Emp. ID", "Emp. name"] + day_headers +
-            ["Present", "Leave", "W. off", "Holiday", "Total", "C-off",
-             "TA adjusted", "TA", "OD1", "OD2", "Avg Working Hr",
-             "OT", "Late marks", "Leave cut", "Remarks"]
+        ["Sr. no.", "Emp. ID", "Emp. name"] + day_headers +
+        ["Present", "Leave", "W. off", "Holiday", "Total", "C-off",
+         "TA adjusted", "TA", "OD1", "OD2", "Avg Working Hr",
+         "OT", "Late marks", "Leave cut", "Remarks"]
     )
+
+    ot_cols = ["Sr. no.", "Emp. ID", "Emp. name"] + day_headers + ["Total OT"]
 
     df_master = pd.DataFrame(master_rows, columns=master_cols)
     df_master.index += 1  # start index at 1 visually (optional)
 
-    ot_cols = ["Sr. no.", "Emp. ID", "Emp. name"] + day_headers + ["Total OT"]
     df_ot = pd.DataFrame(ot_rows, columns=ot_cols) if ot_rows else pd.DataFrame(columns=ot_cols)
 
-    # ---- write both tables with 5‑row spacing (v3.3 original logic) -----------------------
+    # ---- write both tables with 5‑row spacing -----------------------
     with pd.ExcelWriter(save_path, engine="openpyxl") as writer:
         df_master.to_excel(writer, index=False, sheet_name="Sheet1", startrow=0)
         if not df_ot.empty:
-            startrow_ot = len(df_master) + 6  # +1 for header, +5 for spacing
-            df_ot.to_excel(writer, index=False, sheet_name="Sheet1", startrow=startrow_ot)
+            df_ot.to_excel(writer, index=False, sheet_name="Sheet1", startrow=len(df_master)+5)
 
     print(f"✅ MasterSheet + OT table saved → {save_path}")
+
+# ----- CLI helper ----------------------------------------------------
+if __name__ == "__main__":
+    import argparse, json
+    p = argparse.ArgumentParser(description="Build attendance master sheet (Knowchem)")
+    p.add_argument("shifted", help="Path to shift‑aligned source Excel file")
+    p.add_argument("output",  help="Path to save the generated master sheet")
+    p.add_argument("--analyze-comments", action="store_true", help="Parse cell comments for overrides")
+    p.add_argument("--shifts-file", help="Original shift file (required when --analyze-comments)")
+    p.add_argument("--ot-filter", help="Comma‑separated EmpCodes or @json file containing a list")
+    args = p.parse_args()
+
+    build_master(args.shifted, args.output,
+                 analyze_comments=args.analyze_comments,
+                 shifts_path=args.shifts_file)
